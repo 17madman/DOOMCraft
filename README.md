@@ -28,12 +28,9 @@ You do **not** need to install Minecraft, Fabric or the mod: the launcher downlo
 builds the mod into it. (Minecraft is Mojang's game: own a copy of Java Edition.)
 
 1. Clone this repository.
-2. Get GZDoom's source with this project's changes on it (it is cloned into `gzdoom\`):
-   `powershell -ExecutionPolicy Bypass -File tools\gzdoom-changes.ps1 apply`
-3. Unzip the official [GZDoom 4.14.2 Windows release](https://github.com/ZDoom/gzdoom/releases/tag/g4.14.2) into
-   `tools\gzdoom-release\` (its sound libraries are copied from there).
-4. Build GZDoom: `tools\build-gzdoom.cmd` (about 20 minutes; ends with `BUILD OK`).
-5. Double-click `Play.cmd`. The first run downloads Minecraft and builds the mod, a few minutes.
+2. Run `tools\build-gzdoom.cmd`. It clones GZDoom 4.14.2 into `gzdoom\`, puts this project's changes on it,
+   downloads the official release for its sound libraries, and builds (about 20 minutes; ends with `BUILD OK`).
+3. Double-click `Play.cmd`. The first run downloads Minecraft and builds the mod, a few minutes.
 
 ## Play
 
@@ -66,6 +63,7 @@ instead of Doom's), `mc_overscan` (margin for fast turns, 1.6), `mc_cmd <command
 - Looking through a tunnel into another Doom room shows black.
 - Minecraft things show through see-through sprites (spectres, fireballs).
 - Next to mined cells you can walk through monsters and decorations.
+- No Linux support yet, would be extremely easy to add yourself though.
 
 If Doom shows no hotbar, Minecraft isn't in its world: quit and use `Play.cmd` again. Logs: `run\mc-crash.log`
 (Doom), `run\minecraft.log` (Minecraft). The two talk over `127.0.0.1:25599`.
@@ -78,7 +76,7 @@ If Doom shows no hotbar, Minecraft isn't in its world: quit and use `Play.cmd` a
 | `mc\` | the Fabric mod, "Passthrough" |
 | `tools\` | build scripts, the launcher behind `Play.cmd`, `package.ps1` (release zip), test helpers |
 
-After changing GZDoom's source, `tools\gzdoom-changes.ps1 export` writes the changes back to `gzdoom-changes\`.
+After changing GZDoom's source, `tools\gzdoom-changes.cmd export` writes the changes back to `gzdoom-changes\`.
 
 ## How it works
 
@@ -108,3 +106,5 @@ GZDoom (patched)                                      Minecraft 26.3 + Fabric mo
 
 Minecraft belongs to Mojang Studios and Microsoft, Doom to id Software. This is a fan project, not affiliated with
 or endorsed by either. The code was written with Claude Code (Anthropic's Claude).
+
+**THIS IS AI SLOP!**
