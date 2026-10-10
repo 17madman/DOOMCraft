@@ -15,3 +15,8 @@ First release. For Minecraft: Java Edition 26.3 (Fabric) and GZDoom 4.14.2 (incl
 - `Play.cmd`: pick any WAD (or drag one onto it); Doom starts at its own menu.
 - Doom's saves carry Minecraft's side with them: inventory, what was built and what was mined come back on load.
 - Minecraft's world stands still while Doom is paused; mining is no longer five times too slow.
+- Minecraft's screens take the wheel, dragging (the creative scroll bar) and the keyboard (the creative search).
+- Doom's monsters hide the Minecraft mobs and blocks behind them.
+- Creative mode in Minecraft gives Doom's player god mode, notarget and noclip.
+- Raids work: the raiders appear on Doom's floor around the raid.
+- The companion can be switched off (`mc_companion 0`, or Options > Minecraft).

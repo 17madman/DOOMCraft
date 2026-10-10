@@ -143,7 +143,7 @@ namespace
 	bool walking;
 	int walkSince, walkHold, walkBlocked;
 	bool walkFloats;
-	bool creativeCheats;	// Minecraft is in creative: Doom's player has "god" and "notarget" from this bridge
+	bool creativeCheats;	// Minecraft is in creative: Doom's player has "god", "notarget" and "noclip2" from this bridge
 	bool pendingNew;		// a new game has been started: Minecraft has not been told yet
 	FString pendingLoad;	// a saved game has just been loaded: its name, until Minecraft has been told
 	FString walkBlocker;	// what last stopped Doom's player going where Minecraft's stood (for mc_state)
@@ -909,7 +909,7 @@ namespace
 			if (creative && !creativeCheats)
 			{
 				creativeCheats = true;
-				p->cheats |= CF_GODMODE | CF_NOTARGET;
+				p->cheats |= CF_GODMODE | CF_NOTARGET | CF_NOCLIP | CF_NOCLIP2;
 				// (those already after him forget him)
 				auto it = Level->GetThinkerIterator<AActor>();
 				while (AActor *actor = it.Next())
@@ -920,12 +920,12 @@ namespace
 			}
 			else if (creative)
 			{
-				p->cheats |= CF_GODMODE | CF_NOTARGET;	// (a new map, a loaded game: put on again)
+				p->cheats |= CF_GODMODE | CF_NOTARGET | CF_NOCLIP | CF_NOCLIP2;	// (a new map, a loaded game: put on again)
 			}
 			else if (creativeCheats)
 			{
 				creativeCheats = false;
-				p->cheats &= ~(CF_GODMODE | CF_NOTARGET);
+				p->cheats &= ~(CF_GODMODE | CF_NOTARGET | CF_NOCLIP | CF_NOCLIP2);
 			}
 		}
 		else if (strcmp(t, "screen") == 0)
