@@ -1,0 +1,400 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 95b67a2..fb93093 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -835,6 +835,7 @@ set (PCH_SOURCES
+ 	p_states.cpp
+ 	playsim/p_things.cpp
+ 	p_tick.cpp
++	mcbridge/mcbridge.cpp
+ 	playsim/p_user.cpp
+ 	rendering/r_utility.cpp
+ 	rendering/r_sky.cpp
+@@ -1193,6 +1194,8 @@ set( GAME_SOURCES
+ 	${SYSTEM_SOURCES}
+ 	${FASTMATH_SOURCES}
+ 	${PCH_SOURCES}
++	mcbridge/mcshm.cpp
++	mcbridge/ws.cpp
+ 	common/utility/x86.cpp
+ 	common/thirdparty/strnatcmp.c
+ 	common/thirdparty/utf8proc/utf8proc.c
+@@ -1273,6 +1276,7 @@ target_link_libraries( zdoom ${PROJECT_LIBRARIES} lzma ${ZMUSIC_LIBRARIES} )
+ include_directories(
+ 	BEFORE
+ 	.
++	mcbridge
+ 	common/audio/sound
+ 	common/audio/music
+ 	common/2d
+diff --git a/src/common/rendering/gl/gl_renderbuffers.cpp b/src/common/rendering/gl/gl_renderbuffers.cpp
+index 3ce335d..576991b 100644
+--- a/src/common/rendering/gl/gl_renderbuffers.cpp
++++ b/src/common/rendering/gl/gl_renderbuffers.cpp
+@@ -34,6 +34,7 @@
+ #include <random>
+ 
+ EXTERN_CVAR(Int, gl_debug_level)
++EXTERN_CVAR(Bool, mc_passthrough)
+ CVAR(Int, gl_multisample, 1, CVAR_ARCHIVE|CVAR_GLOBALCONFIG);
+ 
+ namespace OpenGLRenderer
+@@ -141,7 +142,8 @@ void FGLRenderBuffers::Setup(int width, int height, int sceneWidth, int sceneHei
+ 		I_FatalError("Requested invalid render buffer sizes: screen = %dx%d", width, height);
+ 
+ 	int samples = clamp((int)gl_multisample, 0, mMaxSamples);
+-	bool needsSceneTextures = (gl_ssao != 0);
++	// the Minecraft passthrough samples the scene's depth, which is only a texture (not a renderbuffer) on this path
++	bool needsSceneTextures = (gl_ssao != 0) || mc_passthrough;
+ 
+ 	GLint activeTex;
+ 	GLint textureBinding;
+diff --git a/src/common/rendering/hwrenderer/postprocessing/hw_postprocess.cpp b/src/common/rendering/hwrenderer/postprocessing/hw_postprocess.cpp
+index 2a685aa..7da942e 100644
+--- a/src/common/rendering/hwrenderer/postprocessing/hw_postprocess.cpp
++++ b/src/common/rendering/hwrenderer/postprocessing/hw_postprocess.cpp
+@@ -28,6 +28,7 @@
+ #include "texturemanager.h"
+ 
+ #include "stats.h"
++#include "mcbridge/mcbridge.h"
+ 
+ Postprocess hw_postprocess;
+ 
+@@ -1126,8 +1127,98 @@ void PPCustomShaderInstance::AddUniformField(size_t &offset, const FString &name
+ }
+ 
+ 
++//==========================================================================
++//
++// Minecraft passthrough
++//
++//==========================================================================
++
++bool PPMinecraft::Update()
++{
++	McLayers layers;
++	Active = MCBridge_GetLayers(layers);
++	if (!Active)
++		return false;
++
++	if (layers.serial != Serial || ColorTexture.Width != layers.width || ColorTexture.Height != layers.height)
++	{
++		// the buffers stay valid until the next MCBridge_GetLayers; the backend copies them on first use
++		auto borrow = [](const void *p) { return std::shared_ptr<void>(const_cast<void *>(p), [](void *) {}); };
++		ColorTexture = PPTexture(layers.width, layers.height, PixelFormat::Rgba8, borrow(layers.color));
++		DepthTexture = PPTexture(layers.width, layers.height, PixelFormat::R32f, borrow(layers.depth));
++		OverlayTexture = PPTexture(layers.width, layers.height, PixelFormat::Rgba8, borrow(layers.overlay));
++		Serial = layers.serial;
++	}
++
++	Uniforms.RotRow0 = FVector4(layers.rot[0][0], layers.rot[0][1], layers.rot[0][2], layers.rot[0][3]);
++	Uniforms.RotRow1 = FVector4(layers.rot[1][0], layers.rot[1][1], layers.rot[1][2], layers.rot[1][3]);
++	Uniforms.RotRow2 = FVector4(layers.rot[2][0], layers.rot[2][1], layers.rot[2][2], layers.rot[2][3]);
++	Uniforms.TanFov = FVector4(layers.tanNow[0], layers.tanNow[1], layers.tanMc[0], layers.tanMc[1]);
++	Uniforms.DepthNow = FVector4(1.0f / screen->GetZFar() - 1.0f / screen->GetZNear(), max(1.0f / screen->GetZNear(), 1.e-8f), 32.0f, 0.0f);
++	Uniforms.DepthMc = FVector4(layers.nearPlane, layers.farPlane, layers.reversedZ ? 1.0f : 0.0f, layers.zeroToOne ? 1.0f : 0.0f);
++	Uniforms.Light = FVector4(layers.light, 0.0f, 0.0f, 0.0f);
++
++	GridUsed = layers.gridUsed;
++	if (GridUsed && layers.gridSerial != GridSerial)
++	{
++		auto borrow = [](const void *p) { return std::shared_ptr<void>(const_cast<void *>(p), [](void *) {}); };
++		GridTexture = PPTexture(layers.gridSide, layers.gridSide, PixelFormat::Rgba8, borrow(layers.grid));
++		GridSerial = layers.gridSerial;
++	}
++	Uniforms.CamRel = FVector4(layers.camInGrid[0], layers.camInGrid[1], layers.camInGrid[2], GridUsed && layers.anyMined ? 1.0f : 0.0f);
++	Uniforms.Light.Y = GridUsed ? 1.0f : 0.0f;
++	Uniforms.Light.Z = layers.sectorLight;
++	Uniforms.WorldRow0 = FVector4(layers.viewToWorld[0][0], layers.viewToWorld[0][1], layers.viewToWorld[0][2], 0.0f);
++	Uniforms.WorldRow1 = FVector4(layers.viewToWorld[1][0], layers.viewToWorld[1][1], layers.viewToWorld[1][2], 0.0f);
++	Uniforms.WorldRow2 = FVector4(layers.viewToWorld[2][0], layers.viewToWorld[2][1], layers.viewToWorld[2][2], 0.0f);
++	Uniforms.Scale = screen->SceneScale();
++	Uniforms.Offset = screen->SceneOffset();
++	DrawWorld = layers.drawWorld;
++	DrawOverlay = layers.drawOverlay;
++	return true;
++}
++
++void PPMinecraft::RenderWorld(PPRenderState *renderstate)
++{
++	if (!Update() || !DrawWorld)
++		return;
++
++	renderstate->PushGroup("minecraft world");
++	renderstate->Clear();
++	renderstate->Shader = gl_multisample > 1 ? &WorldMS : &World;
++	renderstate->Uniforms.Set(Uniforms);
++	renderstate->Viewport = screen->mSceneViewport;
++	renderstate->SetInputCurrent(0);
++	renderstate->SetInputSceneDepth(1);
++	renderstate->SetInputTexture(2, &ColorTexture, PPFilterMode::Linear);
++	renderstate->SetInputTexture(3, &DepthTexture);
++	renderstate->SetInputTexture(4, GridUsed ? &GridTexture : &DepthTexture);
++	renderstate->SetOutputNext();
++	renderstate->SetNoBlend();
++	renderstate->Draw();
++	renderstate->PopGroup();
++}
++
++void PPMinecraft::RenderOverlay(PPRenderState *renderstate)
++{
++	if (!Active || !DrawOverlay)
++		return;
++
++	renderstate->PushGroup("minecraft overlay");
++	renderstate->Clear();
++	renderstate->Shader = &Overlay;
++	renderstate->Viewport = screen->mSceneViewport;
++	renderstate->SetInputCurrent(0);
++	renderstate->SetInputTexture(1, &OverlayTexture, PPFilterMode::Linear);
++	renderstate->SetOutputNext();
++	renderstate->SetNoBlend();
++	renderstate->Draw();
++	renderstate->PopGroup();
++}
++
+ void Postprocess::Pass1(PPRenderState* state, int fixedcm, int sceneWidth, int sceneHeight)
+ {
++	minecraft.RenderWorld(state);
+ 	exposure.Render(state, sceneWidth, sceneHeight);
+ 	customShaders.Run(state, "beforebloom");
+ 	bloom.RenderBloom(state, sceneWidth, sceneHeight, fixedcm);
+@@ -1140,4 +1231,5 @@ void Postprocess::Pass2(PPRenderState* state, int fixedcm, float flash, int scen
+ 	lens.Render(state);
+ 	fxaa.Render(state);
+ 	customShaders.Run(state, "scene");
++	minecraft.RenderOverlay(state);
+ }
+diff --git a/src/common/rendering/hwrenderer/postprocessing/hw_postprocess.h b/src/common/rendering/hwrenderer/postprocessing/hw_postprocess.h
+index 357396d..100096c 100644
+--- a/src/common/rendering/hwrenderer/postprocessing/hw_postprocess.h
++++ b/src/common/rendering/hwrenderer/postprocessing/hw_postprocess.h
+@@ -827,11 +827,77 @@ private:
+ 
+ 
+ 
++/////////////////////////////////////////////////////////////////////////////
++
++// Minecraft passthrough: Minecraft's frame (colour + depth, then hand/HUD) composited into the scene
++
++struct MinecraftWorldUniforms
++{
++	FVector4 RotRow0;
++	FVector4 RotRow1;
++	FVector4 RotRow2;
++	FVector4 TanFov;	// xy: Doom's camera, zw: Minecraft's frame
++	FVector4 DepthNow;	// x, y: linearize Doom's depth, z: map units per block
++	FVector4 DepthMc;	// x: near, y: far, z: reversed Z, w: depth in [0, 1]
++	FVector4 Light;
++	FVector4 CamRel;	// xyz: camera in the cell grid, w: the grid is in use
++	FVector4 WorldRow0;
++	FVector4 WorldRow1;
++	FVector4 WorldRow2;
++	FVector2 Scale;
++	FVector2 Offset;
++
++	static std::vector<UniformFieldDesc> Desc()
++	{
++		return
++		{
++			{ "RotRow0", UniformType::Vec4, offsetof(MinecraftWorldUniforms, RotRow0) },
++			{ "RotRow1", UniformType::Vec4, offsetof(MinecraftWorldUniforms, RotRow1) },
++			{ "RotRow2", UniformType::Vec4, offsetof(MinecraftWorldUniforms, RotRow2) },
++			{ "TanFov", UniformType::Vec4, offsetof(MinecraftWorldUniforms, TanFov) },
++			{ "DepthNow", UniformType::Vec4, offsetof(MinecraftWorldUniforms, DepthNow) },
++			{ "DepthMc", UniformType::Vec4, offsetof(MinecraftWorldUniforms, DepthMc) },
++			{ "Light", UniformType::Vec4, offsetof(MinecraftWorldUniforms, Light) },
++			{ "CamRel", UniformType::Vec4, offsetof(MinecraftWorldUniforms, CamRel) },
++			{ "WorldRow0", UniformType::Vec4, offsetof(MinecraftWorldUniforms, WorldRow0) },
++			{ "WorldRow1", UniformType::Vec4, offsetof(MinecraftWorldUniforms, WorldRow1) },
++			{ "WorldRow2", UniformType::Vec4, offsetof(MinecraftWorldUniforms, WorldRow2) },
++			{ "Scale", UniformType::Vec2, offsetof(MinecraftWorldUniforms, Scale) },
++			{ "Offset", UniformType::Vec2, offsetof(MinecraftWorldUniforms, Offset) }
++		};
++	}
++};
++
++class PPMinecraft
++{
++public:
++	void RenderWorld(PPRenderState *renderstate);
++	void RenderOverlay(PPRenderState *renderstate);
++
++private:
++	bool Update();
++
++	PPShader World = { "shaders/pp/mcworld.fp", "", MinecraftWorldUniforms::Desc() };
++	PPShader WorldMS = { "shaders/pp/mcworld.fp", "#define MULTISAMPLE\n", MinecraftWorldUniforms::Desc() };
++	PPShader Overlay = { "shaders/pp/mcoverlay.fp", "", {} };
++	PPTexture ColorTexture;
++	PPTexture DepthTexture;
++	PPTexture OverlayTexture;
++	PPTexture GridTexture;
++	uint64_t GridSerial = ~0ull;
++	bool GridUsed = false;
++	uint64_t Serial = 0;
++	bool Active = false;
++	bool DrawWorld = true, DrawOverlay = true;
++	MinecraftWorldUniforms Uniforms;
++};
++
+ /////////////////////////////////////////////////////////////////////////////
+ 
+ class Postprocess
+ {
+ public:
++	PPMinecraft minecraft;
+ 	PPBloom bloom;
+ 	PPLensDistort lens;
+ 	PPFXAA fxaa;
+diff --git a/src/d_main.cpp b/src/d_main.cpp
+index 343c9c3..02f8561 100644
+--- a/src/d_main.cpp
++++ b/src/d_main.cpp
+@@ -195,6 +195,8 @@ EXTERN_CVAR (Bool, lookstrafe)
+ EXTERN_CVAR (Int, screenblocks)
+ EXTERN_CVAR (Bool, sv_cheats)
+ EXTERN_CVAR (Bool, sv_unlimited_pickup)
++#include "mcbridge/mcbridge.h"
++
+ EXTERN_CVAR (Bool, r_drawplayersprites)
+ EXTERN_CVAR (Bool, show_messages)
+ EXTERN_CVAR(Bool, ticker)
+@@ -2694,6 +2696,10 @@ bool System_WantLeftButton()
+ static bool System_DispatchEvent(event_t* ev)
+ {
+ 	shiftState.AddEvent(ev);
++	if (MCBridge_EarlyEvent(ev))
++		return true;
++	if (MCBridge_EarlyEvent(ev))
++		return true;
+ 
+ 	if (ev->type == EV_Mouse && menuactive == MENU_Off && ConsoleState != c_down && ConsoleState != c_falling && !primaryLevel->localEventManager->Responder(ev) && !paused)
+ 	{
+@@ -3755,6 +3761,7 @@ static int D_DoomMain_Internal (void)
+ 
+ 		D_DoAnonStats();
+ 		I_UpdateWindowTitle();
++		MCBridge_Startup();
+ 		D_DoomLoop ();		// this only returns if a 'restart' CCMD is given.
+ 		// 
+ 		// Clean up after a restart
+@@ -3826,6 +3833,7 @@ int GameMain()
+ 
+ void D_Cleanup()
+ {
++	MCBridge_Shutdown();
+ 	if (demorecording)
+ 	{
+ 		G_CheckDemoStatus();
+diff --git a/src/g_game.cpp b/src/g_game.cpp
+index 35f2672..450b729 100644
+--- a/src/g_game.cpp
++++ b/src/g_game.cpp
+@@ -91,6 +91,7 @@
+ #include "screenjob.h"
+ #include "i_interface.h"
+ #include "fs_findfile.h"
++#include "mcbridge/mcbridge.h"
+ 
+ 
+ static FRandom pr_dmspawn ("DMSpawn");
+@@ -684,6 +685,7 @@ void G_BuildTiccmd (ticcmd_t *cmd)
+ 	// buttons
+ 	if (buttonMap.ButtonDown(Button_Attack))		cmd->ucmd.buttons |= BT_ATTACK;
+ 	if (buttonMap.ButtonDown(Button_AltAttack))		cmd->ucmd.buttons |= BT_ALTATTACK;
++	MCBridge_FilterTiccmd(cmd);
+ 	if (buttonMap.ButtonDown(Button_Use))			cmd->ucmd.buttons |= BT_USE;
+ 	if (buttonMap.ButtonDown(Button_Jump))			cmd->ucmd.buttons |= BT_JUMP;
+ 	if (buttonMap.ButtonDown(Button_Crouch))		cmd->ucmd.buttons |= BT_CROUCH;
+@@ -816,6 +818,7 @@ void G_BuildTiccmd (ticcmd_t *cmd)
+ 
+ 	cmd->ucmd.forwardmove <<= 8;
+ 	cmd->ucmd.sidemove <<= 8;
++	MCBridge_FilterMovement(cmd);
+ }
+ 
+ static int LookAdjust(int look)
+@@ -986,6 +989,9 @@ CCMD (spycancel)
+ //
+ bool G_Responder (event_t *ev)
+ {
++	if (MCBridge_Responder(ev))
++		return true;
++
+ 	// check events
+ 	if (ev->type != EV_Mouse && primaryLevel->localEventManager->Responder(ev)) // [ZZ] ZScript ate the event // update 07.03.17: mouse events are handled directly
+ 		return true;
+diff --git a/src/p_tick.cpp b/src/p_tick.cpp
+index 59d66a2..ade31c4 100644
+--- a/src/p_tick.cpp
++++ b/src/p_tick.cpp
+@@ -39,6 +39,7 @@
+ #include "actorinlines.h"
+ #include "g_game.h"
+ #include "i_interface.h"
++#include "mcbridge/mcbridge.h"
+ 
+ extern gamestate_t wipegamestate;
+ extern uint8_t globalfreeze, globalchangefreeze;
+@@ -187,5 +188,6 @@ void P_Ticker (void)
+ 		if (players[consoleplayer].mo->Vel.Length() > primaryLevel->max_velocity) { primaryLevel->max_velocity = players[consoleplayer].mo->Vel.Length(); }
+ 		primaryLevel->avg_velocity += (players[consoleplayer].mo->Vel.Length() - primaryLevel->avg_velocity) / primaryLevel->maptime;
+ 	}
++	MCBridge_Ticker();
+ 	StatusBar->CallTick();		// Status bar should tick AFTER the thinkers to properly reflect the level's state at this time.
+ }
+diff --git a/src/rendering/hwrenderer/hw_entrypoint.cpp b/src/rendering/hwrenderer/hw_entrypoint.cpp
+index 0252fbc..62e9004 100644
+--- a/src/rendering/hwrenderer/hw_entrypoint.cpp
++++ b/src/rendering/hwrenderer/hw_entrypoint.cpp
+@@ -27,6 +27,7 @@
+ 
+ #include "gi.h"
+ #include "a_dynlight.h"
++#include "mcbridge/mcbridge.h"
+ #include "m_png.h"
+ #include "doomstat.h"
+ #include "r_data/r_interpolate.h"
+@@ -172,6 +173,11 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
+ 		// Stereo mode specific viewpoint adjustment
+ 		vp.Pos += eye.GetViewShift(vp.HWAngles.Yaw.Degrees());
+ 		di->SetupView(RenderState, vp.Pos.X, vp.Pos.Y, vp.Pos.Z, false, false);
++		if (mainview && toscreen && eye_ix == 0)
++		{
++			const float* proj = di->VPUniforms.mProjectionMatrix.get();
++			MCBridge_Frame(vp, proj[0], proj[5], screen->mSceneViewport.width, screen->mSceneViewport.height);
++		}
+ 
+ 		di->ProcessScene(toscreen);
+ 
+diff --git a/src/rendering/hwrenderer/scene/hw_weapon.cpp b/src/rendering/hwrenderer/scene/hw_weapon.cpp
+index 207f9fb..027a737 100644
+--- a/src/rendering/hwrenderer/scene/hw_weapon.cpp
++++ b/src/rendering/hwrenderer/scene/hw_weapon.cpp
+@@ -48,6 +48,7 @@
+ #include "hw_renderstate.h"
+ 
+ #include "vm.h"
++#include "mcbridge/mcbridge.h"
+ 
+ EXTERN_CVAR(Float, transsouls)
+ EXTERN_CVAR(Int, gl_fuzztype)
+@@ -120,6 +121,7 @@ void HWDrawInfo::DrawPSprite(HUDSprite *huds, FRenderState &state)
+ 
+ void HWDrawInfo::DrawPlayerSprites(bool hudModelStep, FRenderState &state)
+ {
++	if (MCBridge_HideWeapon()) return;	// the hands are Minecraft's
+ 	auto oldlightmode = lightmode;
+ 	if (!hudModelStep && isSoftwareLighting(oldlightmode)) SetFallbackLightMode();	// Software lighting cannot handle 2D content.
+ 	for (auto &hudsprite : hudsprites)
+diff --git a/wadsrc/static/zscript.txt b/wadsrc/static/zscript.txt
+index 46e9879..072c9a0 100644
+--- a/wadsrc/static/zscript.txt
++++ b/wadsrc/static/zscript.txt
+@@ -304,3 +304,4 @@ version "4.14.2"
+ #include "zscript/compatibility.zs"
+ #include "zscript/scriptutil/scriptutil.zs"
+ #include "zscript/actors/mbf21.zs"
++#include "zscript/mcpassthrough.zs"

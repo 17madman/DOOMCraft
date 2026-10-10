@@ -1,0 +1,29 @@
+# GZDoom's own source: a checkout of github.com/ZDoom/gzdoom (see tools\gzdoom-changes.ps1). What this project
+# changes in it is in gzdoom-changes\.
+/gzdoom/
+
+# tools that are downloaded, not written here
+/tools/jdk-*/
+/tools/gradle-home/
+/tools/gzdoom-release/
+/tools/purin-src/
+
+# built, or made by running
+/mc/build/
+/mc/.gradle/
+/mc/run/
+/run/
+/shots/
+/dist/
+*.log
+
+# game files are never committed
+*.wad
+*.WAD
+/wads/
+
+# other people's characters: the companion's model (Sanrio's Pompompurin) and the skin for the Zelda project
+/companion/
+/mc/src/client/resources/assets/passthrough/textures/entity/link.png
+/tools/convert_purin.py
+/tools/make_link_skin.py
