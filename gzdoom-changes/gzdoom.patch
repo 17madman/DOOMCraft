@@ -27,6 +27,26 @@ index 95b67a2..fb93093 100644
  	common/audio/sound
  	common/audio/music
  	common/2d
+diff --git a/src/common/menu/savegamemanager.cpp b/src/common/menu/savegamemanager.cpp
+index efb5a02..74fbade 100644
+--- a/src/common/menu/savegamemanager.cpp
++++ b/src/common/menu/savegamemanager.cpp
+@@ -33,6 +33,7 @@
+ **
+ */
+ 
++void MCBridge_SaveDeleted(const char *filename);
+ #include "menu.h"
+ #include "version.h"
+ #include "m_png.h"
+@@ -85,6 +86,7 @@ int FSavegameManagerBase::RemoveSaveSlot(int index)
+ 	int listindex = SaveGames[0]->bNoDelete ? index - 1 : index;
+ 	if (listindex < 0) return index;
+ 
++	MCBridge_SaveDeleted(SaveGames[index]->Filename.GetChars());	// (Minecraft passthrough: what it kept with this game goes too)
+ 	RemoveFile(SaveGames[index]->Filename.GetChars());
+ 	UnloadSaveData();
+ 
 diff --git a/src/common/rendering/gl/gl_renderbuffers.cpp b/src/common/rendering/gl/gl_renderbuffers.cpp
 index 3ce335d..576991b 100644
 --- a/src/common/rendering/gl/gl_renderbuffers.cpp
@@ -50,7 +70,7 @@ index 3ce335d..576991b 100644
  	GLint activeTex;
  	GLint textureBinding;
 diff --git a/src/common/rendering/hwrenderer/postprocessing/hw_postprocess.cpp b/src/common/rendering/hwrenderer/postprocessing/hw_postprocess.cpp
-index 2a685aa..7da942e 100644
+index 2a685aa..b382df9 100644
 --- a/src/common/rendering/hwrenderer/postprocessing/hw_postprocess.cpp
 +++ b/src/common/rendering/hwrenderer/postprocessing/hw_postprocess.cpp
 @@ -28,6 +28,7 @@
@@ -61,7 +81,7 @@ index 2a685aa..7da942e 100644
  
  Postprocess hw_postprocess;
  
-@@ -1126,8 +1127,98 @@ void PPCustomShaderInstance::AddUniformField(size_t &offset, const FString &name
+@@ -1126,8 +1127,101 @@ void PPCustomShaderInstance::AddUniformField(size_t &offset, const FString &name
  }
  
  
@@ -113,6 +133,8 @@ index 2a685aa..7da942e 100644
 +	Uniforms.Offset = screen->SceneOffset();
 +	DrawWorld = layers.drawWorld;
 +	DrawOverlay = layers.drawOverlay;
++	OverlayUniforms.Cursor = FVector4(layers.cursor[0], layers.cursor[1], layers.cursorShown ? 1.0f : 0.0f, 0.0f);
++	OverlayUniforms.View = FVector4((float)screen->mSceneViewport.width, (float)screen->mSceneViewport.height, 0.0f, 0.0f);
 +	return true;
 +}
 +
@@ -145,6 +167,7 @@ index 2a685aa..7da942e 100644
 +	renderstate->PushGroup("minecraft overlay");
 +	renderstate->Clear();
 +	renderstate->Shader = &Overlay;
++	renderstate->Uniforms.Set(OverlayUniforms);
 +	renderstate->Viewport = screen->mSceneViewport;
 +	renderstate->SetInputCurrent(0);
 +	renderstate->SetInputTexture(1, &OverlayTexture, PPFilterMode::Linear);
@@ -160,17 +183,17 @@ index 2a685aa..7da942e 100644
  	exposure.Render(state, sceneWidth, sceneHeight);
  	customShaders.Run(state, "beforebloom");
  	bloom.RenderBloom(state, sceneWidth, sceneHeight, fixedcm);
-@@ -1140,4 +1231,5 @@ void Postprocess::Pass2(PPRenderState* state, int fixedcm, float flash, int scen
+@@ -1140,4 +1234,5 @@ void Postprocess::Pass2(PPRenderState* state, int fixedcm, float flash, int scen
  	lens.Render(state);
  	fxaa.Render(state);
  	customShaders.Run(state, "scene");
 +	minecraft.RenderOverlay(state);
  }
 diff --git a/src/common/rendering/hwrenderer/postprocessing/hw_postprocess.h b/src/common/rendering/hwrenderer/postprocessing/hw_postprocess.h
-index 357396d..100096c 100644
+index 357396d..e807aab 100644
 --- a/src/common/rendering/hwrenderer/postprocessing/hw_postprocess.h
 +++ b/src/common/rendering/hwrenderer/postprocessing/hw_postprocess.h
-@@ -827,11 +827,77 @@ private:
+@@ -827,11 +827,93 @@ private:
  
  
  
@@ -215,6 +238,21 @@ index 357396d..100096c 100644
 +	}
 +};
 +
++struct MinecraftOverlayUniforms
++{
++	FVector4 Cursor;	// xy: where the pointer is (0..1 across and up the view), z: 1 while it is shown
++	FVector4 View;		// xy: the view in pixels
++
++	static std::vector<UniformFieldDesc> Desc()
++	{
++		return
++		{
++			{ "Cursor", UniformType::Vec4, offsetof(MinecraftOverlayUniforms, Cursor) },
++			{ "View", UniformType::Vec4, offsetof(MinecraftOverlayUniforms, View) }
++		};
++	}
++};
++
 +class PPMinecraft
 +{
 +public:
@@ -226,7 +264,7 @@ index 357396d..100096c 100644
 +
 +	PPShader World = { "shaders/pp/mcworld.fp", "", MinecraftWorldUniforms::Desc() };
 +	PPShader WorldMS = { "shaders/pp/mcworld.fp", "#define MULTISAMPLE\n", MinecraftWorldUniforms::Desc() };
-+	PPShader Overlay = { "shaders/pp/mcoverlay.fp", "", {} };
++	PPShader Overlay = { "shaders/pp/mcoverlay.fp", "", MinecraftOverlayUniforms::Desc() };
 +	PPTexture ColorTexture;
 +	PPTexture DepthTexture;
 +	PPTexture OverlayTexture;
@@ -237,6 +275,7 @@ index 357396d..100096c 100644
 +	bool Active = false;
 +	bool DrawWorld = true, DrawOverlay = true;
 +	MinecraftWorldUniforms Uniforms;
++	MinecraftOverlayUniforms OverlayUniforms;
 +};
 +
  /////////////////////////////////////////////////////////////////////////////
@@ -289,7 +328,7 @@ index 343c9c3..02f8561 100644
  	{
  		G_CheckDemoStatus();
 diff --git a/src/g_game.cpp b/src/g_game.cpp
-index 35f2672..450b729 100644
+index 35f2672..24ae1b2 100644
 --- a/src/g_game.cpp
 +++ b/src/g_game.cpp
 @@ -91,6 +91,7 @@
@@ -326,6 +365,38 @@ index 35f2672..450b729 100644
  	// check events
  	if (ev->type != EV_Mouse && primaryLevel->localEventManager->Responder(ev)) // [ZZ] ZScript ate the event // update 07.03.17: mouse events are handled directly
  		return true;
+@@ -2187,6 +2193,7 @@ void G_DoLoadGame ()
+ 		level.info->Snapshot.Clean();
+ 
+ 	BackupSaveName = savename;
++	MCBridge_GameLoaded(savename.GetChars());
+ 
+ 	// At this point, the GC threshold is likely a lot higher than the
+ 	// amount of memory in use, so bring it down now by starting a
+@@ -2494,6 +2501,7 @@ void G_DoSaveGame (bool okForQuicksave, bool forceQuicksave, FString filename, c
+ 	if (succeeded)
+ 	{
+ 		savegameManager.NotifyNewSave(filename, description, okForQuicksave, forceQuicksave);
++		MCBridge_GameSaved(filename.GetChars());
+ 		BackupSaveName = filename;
+ 
+ 		if (longsavemessages) Printf("%s (%s)\n", GStrings.GetString("GGSAVED"), filename.GetChars());
+diff --git a/src/g_level.cpp b/src/g_level.cpp
+index f4d1051..0531bf0 100644
+--- a/src/g_level.cpp
++++ b/src/g_level.cpp
+@@ -509,8 +509,11 @@ void G_NewInit ()
+ //
+ //==========================================================================
+ 
++void MCBridge_NewGame();	// (Minecraft passthrough: a new game starts Minecraft's side afresh too)
++
+ void G_DoNewGame (void)
+ {
++	MCBridge_NewGame();
+ 	G_NewInit ();
+ 	playeringame[consoleplayer] = 1;
+ 	if (d_skill != -1)
 diff --git a/src/p_tick.cpp b/src/p_tick.cpp
 index 59d66a2..ade31c4 100644
 --- a/src/p_tick.cpp
@@ -369,6 +440,43 @@ index 0252fbc..62e9004 100644
  
  		di->ProcessScene(toscreen);
  
+diff --git a/src/rendering/hwrenderer/scene/hw_sprites.cpp b/src/rendering/hwrenderer/scene/hw_sprites.cpp
+index 26643e7..0860aba 100644
+--- a/src/rendering/hwrenderer/scene/hw_sprites.cpp
++++ b/src/rendering/hwrenderer/scene/hw_sprites.cpp
+@@ -25,6 +25,7 @@
+ **
+ */
+ 
++#include "mcbridge/mcbridge.h"
+ #include "p_local.h"
+ #include "p_effect.h"
+ #include "g_level.h"
+@@ -247,6 +248,15 @@ void HWSprite::DrawSprite(HWDrawInfo *di, FRenderState &state, bool translucent)
+ 		state.EnableSplit(true);
+ 	}
+ 
++	// Minecraft passthrough: Doom draws its sprites last and leaves no depth behind for them, so Minecraft, which is
++	// put into the picture by depth, showed through them: a zombie standing behind an imp was drawn over it. A solid
++	// thing's sprite (not a ghost's, a flame's or a puff's) writes its depth where it is opaque.
++	const bool mcDepth = translucent && actor != nullptr && trans > 0.99f && hw_styleflags != STYLEHW_NoAlphaTest
++		&& RenderStyle.BlendOp == STYLEOP_Add && RenderStyle.SrcAlpha == STYLEALPHA_Src && RenderStyle.DestAlpha == STYLEALPHA_InvSrc
++		&& MCBridge_Active();
++	if (mcDepth)
++		state.SetDepthMask(true);
++
+ 	secplane_t bottomp = { { 0, 0, -1. }, bottomclip, 1. };
+ 	secplane_t topp = { { 0, 0, -1. }, topclip, 1. };
+ 	for (unsigned i = 0; i < iter; i++)
+@@ -324,6 +334,8 @@ void HWSprite::DrawSprite(HWDrawInfo *di, FRenderState &state, bool translucent)
+ 	{
+ 		state.EnableSplit(false);
+ 	}
++	if (mcDepth)
++		state.SetDepthMask(false);
+ 
+ 	if (translucent)
+ 	{
 diff --git a/src/rendering/hwrenderer/scene/hw_weapon.cpp b/src/rendering/hwrenderer/scene/hw_weapon.cpp
 index 207f9fb..027a737 100644
 --- a/src/rendering/hwrenderer/scene/hw_weapon.cpp
@@ -389,6 +497,28 @@ index 207f9fb..027a737 100644
  	auto oldlightmode = lightmode;
  	if (!hudModelStep && isSoftwareLighting(oldlightmode)) SetFallbackLightMode();	// Software lighting cannot handle 2D content.
  	for (auto &hudsprite : hudsprites)
+diff --git a/wadsrc/static/menudef.txt b/wadsrc/static/menudef.txt
+index 759cc90..0bdd8dc 100644
+--- a/wadsrc/static/menudef.txt
++++ b/wadsrc/static/menudef.txt
+@@ -353,9 +353,17 @@ DefaultOptionMenu
+ 	}
+ }
+ 
++OptionMenu "MinecraftOptions" protected
++{
++	Title "Minecraft"
++	Option "Companion (the dog that follows you)",	"mc_companion", "OnOff"
++	Option "Minecraft hands and hotbar",				"mc_hands", "OnOff"
++}
++
+ OptionMenu "OptionsMenu" protected
+ {
+ 	Title "$OPTMNU_TITLE"
++	Submenu "Minecraft",				"MinecraftOptions"
+ 	Submenu "$OPTMNU_CONTROLS",			"CustomizeControls"
+ 	Submenu "$OPTMNU_MOUSE",			"MouseOptions"
+ 	Submenu "$OPTMNU_JOYSTICK",			"JoystickOptions"
 diff --git a/wadsrc/static/zscript.txt b/wadsrc/static/zscript.txt
 index 46e9879..072c9a0 100644
 --- a/wadsrc/static/zscript.txt

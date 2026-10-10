@@ -7,6 +7,7 @@ import org.objectweb.asm.Opcodes;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
@@ -22,5 +23,15 @@ abstract class PlayerMixin {
 		if (Passthrough.active && !(Passthrough.walk && self.level().isClientSide())) {
 			self.noPhysics = true;
 		}
+	}
+
+	/**
+	 * Minecraft digs at a fifth of the speed when the player isn't standing on the ground. While the host moves him
+	 * he is put where the host's player is, and Minecraft never has him "on the ground": every block took five
+	 * times as long as it should. He counts as standing, for digging, whenever the host is the one moving him.
+	 */
+	@Redirect(method = "getDestroySpeed", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/player/Player;onGround()Z"))
+	private boolean passthrough$digsAsIfStanding(final Player player) {
+		return player.onGround() || Passthrough.active && !Passthrough.walk;
 	}
 }

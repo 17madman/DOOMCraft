@@ -74,6 +74,7 @@ public final class HostLink extends WebSocketServer {
 		Passthrough.LOG.info("host disconnected ({} {})", code, reason);
 		WorldBridge.saveKept();
 		BlockExport.hostCan = false;
+		PassthroughClient.hostCursor = false;
 		Skins.host("");
 	}
 
@@ -84,7 +85,10 @@ public final class HostLink extends WebSocketServer {
 			switch (m.get("t").getAsString()) {
 				case "cam" -> HostState.update(m);
 				case "skin" -> Skins.host(m.has("k") ? m.get("k").getAsString() : "");
-				case "caps" -> BlockExport.hostCan = m.has("cubes") && m.get("cubes").getAsBoolean();
+				case "caps" -> {
+					BlockExport.hostCan = m.has("cubes") && m.get("cubes").getAsBoolean();
+					PassthroughClient.hostCursor = m.has("cursor") && m.get("cursor").getAsBoolean();
+				}
 				case "ground" -> WorldBridge.solid(ints(m.getAsJsonArray("c")));
 				case "cols" -> WorldBridge.columns(ints(m.getAsJsonArray("c")));
 				case "reset" -> WorldBridge.reset();
@@ -100,6 +104,10 @@ public final class HostLink extends WebSocketServer {
 				}
 				case "clear" -> WorldBridge.clearSolid();
 				case "cmd" -> WorldBridge.command(m.get("c").getAsString());
+				case "newgame" -> PassthroughClient.newGame();
+				case "save" -> WorldBridge.saveGame(m.get("id").getAsString(), m.has("carried") && m.get("carried").getAsBoolean());
+				case "load" -> WorldBridge.loadGame(m.get("id").getAsString());
+				case "savedel" -> WorldBridge.deleteGame(m.get("id").getAsString());
 				case "wall" -> {
 					JsonArray at = m.getAsJsonArray("p"), n = m.getAsJsonArray("n");
 					dev.rehan.passthrough.Walls.wall(at.get(0).getAsDouble(), at.get(1).getAsDouble(), n.get(0).getAsDouble(), n.get(1).getAsDouble());

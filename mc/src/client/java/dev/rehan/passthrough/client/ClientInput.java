@@ -17,6 +17,9 @@ final class ClientInput {
 	private ClientInput() {
 	}
 
+	/** The mouse button the host holds down over a screen, for dragging (a scroll bar, items spread over slots). */
+	private static MouseButtonInfo held;
+
 	static void handle(final Minecraft minecraft, final JsonObject m) {
 		LocalPlayer player = minecraft.player;
 		switch (m.get("t").getAsString()) {
@@ -65,8 +68,10 @@ final class ClientInput {
 
 				if (k.equals("attack") && down && player != null && minecraft.gui.screen() == null) {
 					// any swing, with the damage of what he holds: the host hits its own creatures with it
-					Passthrough.events.accept(String.format(java.util.Locale.ROOT, "{\"t\":\"swing\",\"d\":%.2f}",
-						player.getAttributeValue(net.minecraft.world.entity.ai.attributes.Attributes.ATTACK_DAMAGE)));
+					// ("s": how many full-strength swings a second the item makes, for the host to weigh a hurried one by)
+					Passthrough.events.accept(String.format(java.util.Locale.ROOT, "{\"t\":\"swing\",\"d\":%.2f,\"s\":%.2f}",
+						dev.rehan.passthrough.WorldBridge.attackDamage(player.getAttributeValue(net.minecraft.world.entity.ai.attributes.Attributes.ATTACK_DAMAGE)),
+						player.getAttributeValue(net.minecraft.world.entity.ai.attributes.Attributes.ATTACK_SPEED)));
 				}
 
 				if (key != null) {
@@ -81,7 +86,20 @@ final class ClientInput {
 			case "mouse" -> {
 				// the cursor over an open screen (inventory, crafting table...), in window pixels
 				if (minecraft.gui.screen() != null) {
-					minecraft.mouseHandler.onMove(minecraft.getWindow().handle(), m.get("x").getAsDouble(), m.get("y").getAsDouble(), 0.0, 0.0);
+					double x = m.get("x").getAsDouble(), y = m.get("y").getAsDouble();
+					double dx = x - minecraft.mouseHandler.xpos(), dy = y - minecraft.mouseHandler.ypos();
+					minecraft.mouseHandler.onMove(minecraft.getWindow().handle(), x, y, 0.0, 0.0);
+					// Minecraft only tells a screen of a drag while its own window has the focus, and under a host it
+					// never has: a scroll bar could not be pulled, nor items spread by dragging. The screen is told here.
+					if (held != null && !minecraft.isWindowActive() && (dx != 0.0 || dy != 0.0) && minecraft.gui.screen() != null) {
+						var window = minecraft.getWindow();
+						minecraft.gui.screen().mouseDragged(
+							new net.minecraft.client.input.MouseButtonEvent(minecraft.mouseHandler.getScaledXPos(window),
+								minecraft.mouseHandler.getScaledYPos(window), held),
+							net.minecraft.client.MouseHandler.getScaledXPos(window, dx), net.minecraft.client.MouseHandler.getScaledYPos(window, dy));
+					}
+				} else {
+					held = null;
 				}
 			}
 			case "click" -> {
@@ -93,7 +111,9 @@ final class ClientInput {
 						default -> InputConstants.MOUSE_BUTTON_MIDDLE;
 					};
 					MouseButtonInfo button = new MouseButtonInfo(b, m.has("mods") && m.get("mods").getAsInt() != 0 ? InputConstants.MOD_SHIFT : 0);
-					minecraft.mouseHandler.onButton(minecraft.getWindow().handle(), button, m.get("down").getAsBoolean() ? 1 : 0);
+					boolean down = m.get("down").getAsBoolean();
+					held = down ? button : held != null && held.button() == b ? null : held;
+					minecraft.mouseHandler.onButton(minecraft.getWindow().handle(), button, down ? 1 : 0);
 				}
 			}
 			case "slot" -> {
@@ -102,7 +122,10 @@ final class ClientInput {
 				}
 			}
 			case "scroll" -> {
-				if (player != null) {
+				if (minecraft.gui.screen() != null) {
+					// over a screen the wheel is the screen's (the creative list, a villager's trades)
+					minecraft.mouseHandler.onScroll(minecraft.getWindow().handle(), 0.0, m.get("d").getAsDouble());
+				} else if (player != null) {
 					Inventory inventory = player.getInventory();
 					int size = Inventory.getSelectionSize();
 					inventory.setSelectedSlot(Math.floorMod(inventory.getSelectedSlot() - m.get("d").getAsInt(), size));
@@ -111,7 +134,20 @@ final class ClientInput {
 			case "char" -> {
 				// typing into an open screen (chat): the host has the keyboard
 				if (minecraft.gui.screen() != null) {
-					minecraft.gui.screen().charTyped(new net.minecraft.client.input.CharacterEvent(m.get("c").getAsInt()));
+					// As Minecraft has it from a real keyboard: the key first (E shuts an inventory, a number swaps
+					// with the hotbar, a focused text box takes it for itself), and then the letter it types.
+					var screen = minecraft.gui.screen();
+					int c = m.get("c").getAsInt();
+					int lower = Character.toLowerCase(c);
+					String name = lower == ' ' ? "space" : lower >= 'a' && lower <= 'z' || lower >= '0' && lower <= '9' ? String.valueOf((char)lower) : null;
+					if (name != null) {
+						int mods = Character.isUpperCase(c) ? InputConstants.MOD_SHIFT : 0;
+						screen.keyPressed(new net.minecraft.client.input.KeyEvent(InputConstants.getKey("key.keyboard." + name).getValue(), lower, mods));
+					}
+
+					if (minecraft.gui.screen() == screen) {
+						screen.charTyped(new net.minecraft.client.input.CharacterEvent(c));
+					}
 				}
 			}
 			case "keypress" -> {

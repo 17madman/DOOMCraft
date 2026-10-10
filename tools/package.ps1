@@ -1,7 +1,7 @@
 # Builds the release: dist\minecraft-in-doom-<version>\ and the zip of it, ready to attach to a GitHub release.
 #   powershell -File tools\package.ps1 [-Companion] [-SkipBuild]
 # What goes in: the patched GZDoom as built (and the runtime files of the official release it needs), the mod's jar,
-# Play.cmd, PLAYING.md as its README, and the source (GZDoom's is the GPL's: a patch and the new files; the mod's
+# Play.cmd, the README, licence and changelog, and the source (GZDoom's is the GPL's: a patch and the new files; the mod's
 # whole). What stays out: any WAD, the developer's own settings, the debug symbols, and two things that are other
 # people's characters: the companion (a Sanrio character; -Companion puts him in) and the Link skin in the mod's jar
 # (it is for the Zelda project, not this one).
@@ -41,8 +41,7 @@ $zip.Dispose()
 Copy-Item (Join-Path $root "Play.cmd") $out
 New-Item -ItemType Directory -Force "$out\tools" | Out-Null
 Copy-Item (Join-Path $root "tools\play.ps1") "$out\tools"
-Copy-Item (Join-Path $root "PLAYING.md") "$out\README.md"
-Copy-Item (Join-Path $root "LICENSE"), (Join-Path $root "CHANGELOG.md") $out
+Copy-Item (Join-Path $root "README.md"), (Join-Path $root "LICENSE"), (Join-Path $root "CHANGELOG.md") $out
 Set-Content "$out\wads\PUT YOUR WAD FILES HERE.txt" "A handy place for your WAD files (DOOM.WAD, DOOM2.WAD, TNT.WAD, PLUTONIA.WAD from your own copy of the game, the shareware DOOM1.WAD, Freedoom, add-ons). Play.cmd opens here the first time; it takes a WAD from anywhere." -Encoding ascii
 
 if ($Companion) {

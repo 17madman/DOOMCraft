@@ -87,6 +87,18 @@ public class PassthroughClient implements ClientModInitializer {
 	}
 	/** Server ticks until the setup commands run (the player isn't in the player list yet when JOIN fires). */
 	private static int setupIn = -1;
+
+	/**
+	 * {"t":"newgame"}: the host has started a new game. The player starts again too: nothing carried, no experience,
+	 * and then what a new player is given (see the kit, below), as when Minecraft has just started.
+	 */
+	static void newGame() {
+		WorldBridge.command("clear @a");
+		WorldBridge.command("xp set @a 0 levels");
+		WorldBridge.command("xp set @a 0 points");
+		WorldBridge.command("tag @a remove passthrough_kit");
+		setupIn = 5;
+	}
 	private static int respawnIn;
 	static boolean windowHidden;
 	/**
@@ -96,6 +108,8 @@ public class PassthroughClient implements ClientModInitializer {
 	private static final boolean BACKGROUND = Passthrough.option("background", "").equals("1");
 	private static int quietIn;
 	private static boolean reportedScreen;
+	/** The host draws the pointer over our screens itself (where its mouse is now; ours would trail behind). */
+	static volatile boolean hostCursor;
 	private static int screenReportIn;
 
 	@Override
@@ -104,7 +118,7 @@ public class PassthroughClient implements ClientModInitializer {
 		// the host forwards its mouse to our screens, so the cursor has to be drawn here
 		ScreenEvents.AFTER_INIT.register((client, screen, width, height) ->
 			ScreenEvents.afterExtract(screen).register((s, graphics, mouseX, mouseY, tickDelta) -> {
-				if (Passthrough.active) {
+				if (Passthrough.active && !hostCursor) {
 					for (int i = 0; i < 9; i++) {
 						int w = i < 6 ? i + 1 : 9 - i;
 						graphics.fill(mouseX - 1, mouseY + i - 1, mouseX + w + 1, mouseY + i + 2, 0xFF000000);
@@ -129,18 +143,25 @@ public class PassthroughClient implements ClientModInitializer {
 		});
 		ServerTickEvents.END_SERVER_TICK.register(server -> {
 			if (setupIn > 0 && --setupIn == 0) {
-				// the rules every time; the things he is given only once in a world that is kept (and not at all
-				// with PASSTHROUGH_KIT=none: then he starts with empty hands, as in a new survival world)
+				// The rules every time; the things he is given only once in a world that is kept. What he is given
+				// (PASSTHROUGH_KIT, or -Dpassthrough.kit): "starter", a wooden pickaxe and nothing else, as good as a new
+				// survival world (the default); "full", the whole kit; "none", empty hands.
 				ServerPlayer player = server.getPlayerList().getPlayers().isEmpty() ? null : server.getPlayerList().getPlayers().get(0);
 				boolean given = player != null && player.entityTags().contains("passthrough_kit");
-				boolean none = !Passthrough.option("kit", "none").equalsIgnoreCase("full");
+				String wanted = Passthrough.option("kit", "starter");
+				boolean full = wanted.equalsIgnoreCase("full"), none = wanted.equalsIgnoreCase("none");
+				boolean again = given && Passthrough.keepsWorld();
 				for (String command : SETUP) {
 					boolean kit = command.startsWith("clear ") || command.startsWith("item ") || command.startsWith("give ");
-					if (kit && (none || given && Passthrough.keepsWorld())) {
+					if (kit && (!full || again)) {
 						continue;
 					}
 
 					WorldBridge.command(command);
+				}
+
+				if (!full && !none && !again) {
+					WorldBridge.command("give @a minecraft:wooden_pickaxe");
 				}
 
 				if (player != null && !none) {
@@ -150,8 +171,21 @@ public class PassthroughClient implements ClientModInitializer {
 		});
 	}
 
+	private static int modeSaid = -1, modeSaidIn;
+
 	private static void tick(final Minecraft minecraft) {
 		BlockExport.tick(minecraft);
+		// {"t":"mode","creative":bool}: in creative (or spectating) nothing can hurt the player here; the host is told,
+		// to have its own player as safe (said when it changes, and again now and then for a host that came later)
+		if (Passthrough.active && minecraft.player != null) {
+			int creative = minecraft.player.getAbilities().invulnerable ? 1 : 0;
+			if (creative != modeSaid || --modeSaidIn <= 0) {
+				modeSaid = creative;
+				modeSaidIn = 60;
+				Passthrough.events.accept("{\"t\":\"mode\",\"creative\":" + (creative == 1) + "}");
+			}
+		}
+
 		// a death (the void) would leave the death screen over the host's picture: respawn straight away
 		if (minecraft.player != null && minecraft.gui.screen() instanceof DeathScreen && --respawnIn <= 0) {
 			respawnIn = 40;

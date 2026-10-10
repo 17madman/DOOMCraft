@@ -20,6 +20,10 @@ abstract class FoodDataMixin {
 			}
 
 			ci.cancel();
+		} else if (dev.rehan.passthrough.Passthrough.active && player.level().tickRateManager().isFrozen()) {
+			// The host is paused (it has frozen the world): the player, whom the freeze leaves alone, neither gets
+			// hungry nor heals from being fed meanwhile. (He healed all the way up behind the host's pause menu.)
+			ci.cancel();
 		}
 	}
 }

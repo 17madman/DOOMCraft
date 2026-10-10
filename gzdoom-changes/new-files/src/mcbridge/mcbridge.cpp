@@ -143,6 +143,9 @@ namespace
 	bool walking;
 	int walkSince, walkHold, walkBlocked;
 	bool walkFloats;
+	bool creativeCheats;	// Minecraft is in creative: Doom's player has "god" and "notarget" from this bridge
+	bool pendingNew;		// a new game has been started: Minecraft has not been told yet
+	FString pendingLoad;	// a saved game has just been loaded: its name, until Minecraft has been told
 	FString walkBlocker;	// what last stopped Doom's player going where Minecraft's stood (for mc_state)
 	double mcPos[3], mcVel[3];
 	uint64_t mcPosNanos;
@@ -540,6 +543,16 @@ namespace
 	//
 	//==========================================================================
 
+	// What a point of Minecraft's damage is in Doom's. Set against Doom's own weapons (a pistol shot is about 10, a
+	// shotgun blast about 70, a punch about 11) and its monsters (a zombieman has 20, an imp 60, a demon 150): a fist
+	// is 3, a wooden pickaxe 6, a stone sword 15, an iron one 18, a diamond one 21; a zombie's blow 9. A good sword,
+	// swung as fast as it will go at full strength, does about what the pistol does and has to be at arm's length to
+	// do it; Doom's own guns stay the better weapons, as they should in Doom.
+	const double MC_TO_DOOM = 3.0;
+	const int ARROW_DAMAGE = 24;				// a bow's arrow (about 8 in Minecraft): two for a zombieman, three an imp
+	const double BLAST = 0.5;					// a Minecraft explosion against a rocket's of the same reach (TNT: 64 at its middle)
+	int lastSwingTic = -1000;
+
 	// Whether a point (Doom coordinates) is inside something solid.
 	bool solidAt(FLevelLocals *Level, double dx, double dy, double dz)
 	{
@@ -713,9 +726,68 @@ namespace
 		if (type == nullptr)
 			return;
 		AActor *spot = Spawn(Level, type, pos, NO_REPLACE);
-		// TNT (radius 4) hits like a rocket: 128 damage over 128 units
+		// TNT (radius 4) reaches as far as a rocket's blast (128 units) and does half the damage
 		const int reach = static_cast<int>(radiusBlocks * UNITS);
-		P_RadiusAttack(spot, player, reach, reach, NAME_None, RADF_HURTSOURCE);
+		P_RadiusAttack(spot, player, static_cast<int>(reach * BLAST), reach, NAME_None, RADF_HURTSOURCE);
+	}
+
+	// A monster hit by something of Minecraft's shows it, every time: it flinches (its pain state, which Doom itself
+	// only gives it now and then, by the monster's "pain chance") and is knocked back a little, less the heavier it
+	// is, as a mob in Minecraft is. Without this a punch or an arrow often did nothing to see.
+	void flinch(AActor *actor, const DVector3 &dir)
+	{
+		if (actor == nullptr || actor->health <= 0 || actor->player != nullptr || isBlockActor(actor))
+			return;
+		const double push = clamp(500.0 / max(actor->Mass, 1), 0.4, 5.0);
+		actor->Vel.X += dir.X * push;
+		actor->Vel.Y += dir.Y * push;
+		FState *pain = actor->FindState(NAME_Pain);
+		if (pain != nullptr && !(actor->flags & MF_SKULLFLY))
+			actor->SetState(pain);
+	}
+
+	// A swing of what Steve holds: it hits the first thing of Doom's within three blocks along his view, for the
+	// damage Minecraft gives the item (a fist 1, a wooden pickaxe 2, a diamond sword 7), in Doom's measure. As in
+	// Minecraft, a swing made before the last one has been recovered from is weak: clicking as fast as the mouse
+	// will go does a fifth of the damage a swing, not more of it. (`perSecond`: the item's full swings a second;
+	// a sword 1.6, a pickaxe 1.2, a fist 4.)
+	void swing(FLevelLocals *Level, AActor *player, double minecraftDamage, double perSecond)
+	{
+		const double recovery = TICRATE / clamp(perSecond, 0.5, 4.0);
+		const double ready = clamp((tic - lastSwingTic) / recovery, 0.0, 1.0);
+		lastSwingTic = tic;
+		minecraftDamage *= 0.2 + 0.8 * ready * ready;
+		const DAngle yaw = player->Angles.Yaw, pitch = player->Angles.Pitch;
+		const DVector3 dir(yaw.Cos() * pitch.Cos(), yaw.Sin() * pitch.Cos(), -pitch.Sin());
+		const DVector3 from = player->PosPlusZ(player->player != nullptr ? player->player->viewheight : 41.0);
+		sector_t *sector = sectorAt(Level, from.X, from.Y);
+		if (sector == nullptr)
+			return;
+		FTraceResults hit;
+		if (!Trace(from, sector, dir, 3.0 * UNITS, MF_SHOOTABLE, ML_BLOCKEVERYTHING, player, hit, TRACE_NoSky))
+			return;
+		if (hit.HitType != TRACE_HitActor || hit.Actor == nullptr || isBlockActor(hit.Actor))
+			return;
+		// (a Minecraft mob's stand-in: Minecraft has hit the mob itself)
+		if (hit.Actor->GetClass()->TypeName == FName("MCMobProxy"))
+			return;
+		// A critical hit, as in Minecraft: a full-strength swing made while falling (on the way down from a jump) does
+		// half as much again, with Minecraft's sparks and sound where it lands.
+		const bool critical = ready > 0.9 && player->player != nullptr && !player->player->onground && player->Vel.Z < 0.0;
+		if (critical)
+		{
+			minecraftDamage *= 1.5;
+			const DVector3 at = hit.Actor->PosPlusZ(hit.Actor->Height * 0.6);
+			FString c;
+			c.Format("particle minecraft:crit %.2f %.2f %.2f 0.3 0.4 0.3 0.5 14 force", mcX(at.X), mcY(at.Z), mcZ(at.Y));
+			sendCommand(c.GetChars());
+			c.Format("playsound minecraft:entity.player.attack.crit player @a %.2f %.2f %.2f 1 1", mcX(at.X), mcY(at.Z), mcZ(at.Y));
+			sendCommand(c.GetChars());
+		}
+		P_DamageMobj(hit.Actor, player, player, max(1, static_cast<int>(minecraftDamage * MC_TO_DOOM + 0.5)), NAME_Melee, 0, dir.Angle());
+		// (a tap flinches nothing: that would hold a monster helpless under a fast mouse)
+		if (ready > 0.6)
+			flinch(hit.Actor, dir);
 	}
 
 	void traceProjectile(FLevelLocals *Level, AActor *player, int id, const char *kind, const DVector3 &pos)
@@ -750,7 +822,10 @@ namespace
 		{
 			stick = false;
 			if (!firework)
-				P_DamageMobj(hit.Actor, nullptr, player, 40, NAME_None, 0, dir.Angle());
+			{
+				P_DamageMobj(hit.Actor, nullptr, player, ARROW_DAMAGE, NAME_None, 0, dir.Angle());
+				flinch(hit.Actor, dir);
+			}
 		}
 		if (firework)
 			explode(Level, player, hit.HitPos - dir * 4.0, 3.0);
@@ -809,10 +884,11 @@ namespace
 				mined.insert(key3(set[i].GetInt(), set[i + 1].GetInt(), set[i + 2].GetInt()));
 			gridDirty = true;
 		}
-		else if (strcmp(t, "melee") == 0)
+		else if (strcmp(t, "swing") == 0)
 		{
-			// a sword swing reaches three blocks
-			P_LineAttack(player, player->Angles.Yaw, 3 * UNITS, player->Angles.Pitch, 60, NAME_Melee, NAME_BulletPuff);
+			// a swing of whatever he holds, a bare fist too, with its Minecraft damage ("d")
+			swing(Level, player, m.HasMember("d") && m["d"].IsNumber() ? m["d"].GetDouble() : 1.0,
+				m.HasMember("s") && m["s"].IsNumber() ? m["s"].GetDouble() : 4.0);
 		}
 		else if (strcmp(t, "proj") == 0)
 		{
@@ -822,6 +898,34 @@ namespace
 				const auto &e = list[i];
 				traceProjectile(Level, player, e[0].GetInt(), e[1].GetString(),
 					toDoom(e[2].GetDouble(), e[3].GetDouble(), e[4].GetDouble()));
+			}
+		}
+		else if (strcmp(t, "mode") == 0)
+		{
+			// Minecraft's game mode: in creative Doom's player cannot be hurt and its monsters take no notice of him
+			// (Doom's own "god" and "notarget"); back in survival both are off again, if it was this that put them on.
+			const bool creative = m.HasMember("creative") && m["creative"].IsBool() && m["creative"].GetBool();
+			player_t *p = &players[consoleplayer];
+			if (creative && !creativeCheats)
+			{
+				creativeCheats = true;
+				p->cheats |= CF_GODMODE | CF_NOTARGET;
+				// (those already after him forget him)
+				auto it = Level->GetThinkerIterator<AActor>();
+				while (AActor *actor = it.Next())
+				{
+					if ((actor->flags3 & MF3_ISMONSTER) && actor->target == player)
+						actor->target = nullptr;
+				}
+			}
+			else if (creative)
+			{
+				p->cheats |= CF_GODMODE | CF_NOTARGET;	// (a new map, a loaded game: put on again)
+			}
+			else if (creativeCheats)
+			{
+				creativeCheats = false;
+				p->cheats &= ~(CF_GODMODE | CF_NOTARGET);
 			}
 		}
 		else if (strcmp(t, "screen") == 0)
@@ -884,7 +988,7 @@ namespace
 	const double MOB_SIGHT = 24 * UNITS;		// a monster picks a fight with a mob it sees this near
 	const int PROXY_HEALTH = 1000000;
 	const double DOOM_TO_MC = 1.0 / 3.0;		// a zombieman's shot (3-15) is 1-5 of a mob's 20 health
-	const double MC_TO_DOOM = 8.0;				// a zombie's hit (3) is 24 of an imp's 60
+
 
 	std::unordered_map<AActor *, int> monsterHandles;	// keys are only compared, never followed
 	int nextHandle = 1;
@@ -918,6 +1022,21 @@ namespace
 				c.Format("summon minecraft:item %.2f %.2f %.2f {Item:{id:\"minecraft:%s\",count:%d}}", mcX(pos.X), mcY(pos.Z) + 0.5, mcZ(pos.Y),
 					loot[handle % 8], 1 + handle % 2);
 				sendCommand(c.GetChars());
+				// The former humans (zombieman, shotgun guy, chaingunner, the SS) leave wood about every other time: a
+				// map with no wooden walls in it still has a crafting table and a first pickaxe's worth to be found.
+				static const char *const formerHumans[] = {"ZombieMan", "ShotgunGuy", "ChaingunGuy", "WolfensteinSS"};
+				bool human = false;
+				for (const char *name : formerHumans)
+				{
+					PClassActor *type = PClass::FindActor(name);
+					human = human || (type != nullptr && actor->IsKindOf(type));
+				}
+				if (human && ((static_cast<unsigned>(handle) * 2654435761u) >> 16) % 100 < 50)
+				{
+					c.Format("summon minecraft:item %.2f %.2f %.2f {Item:{id:\"minecraft:oak_log\",count:%d}}", mcX(pos.X), mcY(pos.Z) + 0.5,
+						mcZ(pos.Y), 1 + (handle >> 1) % 2);
+					sendCommand(c.GetChars());
+				}
 			}
 			else if ((actor->flags3 & MF3_ISMONSTER) && actor->health > 0 && (actor->flags & MF_SHOOTABLE)
 				&& !(actor->flags & MF_FRIENDLY) && actor->Distance2D(player) < MOB_RANGE)
@@ -987,7 +1106,28 @@ namespace
 				attacker = proxy;
 			}
 		}
+		const bool alive = monster->health > 0;
+		const DVector3 chest = monster->PosPlusZ(monster->Height * 0.6);
+		DVector3 dir = monster->Pos() - from;
+		dir.Z = 0;
+		if (dir.Length() > 0.1)
+			dir /= dir.Length();
 		P_DamageMobj(monster, attacker, attacker, max(1, static_cast<int>(damage * MC_TO_DOOM)), NAME_Melee);
+		// The blow shows on both sides: Doom's blood where it landed and the monster staggering, and Minecraft's own
+		// marks of a hit (the dark hearts of damage dealt, a sweep), and a puff of smoke if that was the end of it.
+		P_SpawnBlood(chest, dir.Angle() + DAngle::fromDeg(180.), static_cast<int>(damage * MC_TO_DOOM), monster);
+		flinch(monster, dir);
+		FString c;
+		c.Format("particle minecraft:damage_indicator %.2f %.2f %.2f 0.25 0.3 0.25 0.2 %d force", mcX(chest.X), mcY(chest.Z), mcZ(chest.Y),
+			clamp(static_cast<int>(damage * 2), 3, 14));
+		sendCommand(c.GetChars());
+		c.Format("particle minecraft:sweep_attack %.2f %.2f %.2f 0 0 0 0 1 force", mcX(chest.X - dir.X * 12), mcY(chest.Z), mcZ(chest.Y - dir.Y * 12));
+		sendCommand(c.GetChars());
+		if (alive && monster->health <= 0)
+		{
+			c.Format("particle minecraft:poof %.2f %.2f %.2f 0.3 0.5 0.3 0.05 20 force", mcX(chest.X), mcY(chest.Z), mcZ(chest.Y));
+			sendCommand(c.GetChars());
+		}
 	}
 
 	void tickFighters(FLevelLocals *Level)
@@ -1011,6 +1151,14 @@ namespace
 				FString m;
 				m.Format("{\"t\":\"mobdmg\",\"id\":%d,\"d\":%.2f}", id, (PROXY_HEALTH - proxy->health) * DOOM_TO_MC);
 				send(m);
+				// (a monster has hurt the mob: Minecraft's marks of it on the mob, sparks and the dark hearts)
+				const DVector3 at = proxy->PosPlusZ(proxy->Height * 0.6);
+				const double hurt = (PROXY_HEALTH - proxy->health) * DOOM_TO_MC;
+				m.Format("particle minecraft:damage_indicator %.2f %.2f %.2f 0.25 0.3 0.25 0.2 %d force", mcX(at.X), mcY(at.Z), mcZ(at.Y),
+					clamp(static_cast<int>(hurt), 2, 12));
+				sendCommand(m.GetChars());
+				m.Format("particle minecraft:crit %.2f %.2f %.2f 0.3 0.4 0.3 0.4 %d force", mcX(at.X), mcY(at.Z), mcZ(at.Y), clamp(static_cast<int>(hurt * 2), 4, 16));
+				sendCommand(m.GetChars());
 				proxy->health = PROXY_HEALTH;
 			}
 			i++;
@@ -1069,7 +1217,7 @@ namespace
 
 	void keepCompanion(FLevelLocals *Level, AActor *player)
 	{
-		if (!mc_companion || (tic % 35) != 0 || player->health <= 0)
+		if ((tic % 35) != 0 || player->health <= 0)
 			return;
 		PClassActor *type = PClass::FindActor("MCPurin");
 		if (type == nullptr)
@@ -1083,6 +1231,13 @@ namespace
 				companion = actor;
 				break;
 			}
+		}
+		if (!mc_companion)
+		{
+			// sent away (mc_companion 0, or the Minecraft page of the options menu): he goes at once
+			if (companion != nullptr)
+				companion->Destroy();
+			return;
 		}
 		// behind the player, at the player's feet
 		const DAngle back = player->Angles.Yaw + DAngle::fromDeg(180.);
@@ -1321,6 +1476,9 @@ namespace
 		sentHealth = sentArmor = -1;
 		viewSent = false;
 		send("{\"t\":\"reset\"}");
+		// (the pointer over Minecraft's screens is drawn here, where the mouse is now: in Minecraft's picture, which
+		// is shown a frame or two late, it trailed behind the hand)
+		send("{\"t\":\"caps\",\"cursor\":true}");
 		currentLevel = Level;
 		currentMap = Level->MapName;
 		currentMapTime = Level->maptime;
@@ -1410,12 +1568,26 @@ void MCBridge_Ticker()
 		return;
 	}
 
-	if (generation != link.generation() || Level != currentLevel || currentMap.Compare(Level->MapName) != 0 || Level->maptime < currentMapTime)
+	if (generation != link.generation() || Level != currentLevel || currentMap.Compare(Level->MapName) != 0 || Level->maptime < currentMapTime
+		|| pendingLoad.IsNotEmpty() || pendingNew)
 	{
 		// a new connection or a new map: Minecraft starts from nothing
 		removeBlockActors(Level);
 		generation = link.generation();
 		reset(Level);
+		if (pendingNew)
+		{
+			pendingNew = false;
+			send("{\"t\":\"newgame\"}");
+		}
+		if (pendingLoad.IsNotEmpty())
+		{
+			// (after the "reset": the map is empty in Minecraft, and what went with this game is put back into it)
+			FString m;
+			m.Format("{\"t\":\"load\",\"id\":\"%s\"}", pendingLoad.GetChars());
+			send(m);
+			pendingLoad = "";
+		}
 	}
 	currentMapTime = Level->maptime;
 
@@ -1472,6 +1644,20 @@ void MCBridge_Frame(const FRenderViewpoint &vp, float proj0, float proj5, int wi
 	now.valid = false;
 	if (!started || !inGame() || !link.connected() || proj0 == 0.f || proj5 == 0.f)
 		return;
+
+	// Doom stands still (paused, its menu or its console open): Minecraft's world stands still too. Its mobs went
+	// on walking and fighting, and its day went on, behind Doom's menu. ("tick freeze" stops everything there but
+	// the player; this is looked at here and not in the ticker, which does not run while Doom is stopped.)
+	{
+		static int said = -1, saidFrame;
+		const bool stopped = !netgame && (paused || menuactive == MENU_On || ConsoleState == c_down || ConsoleState == c_falling);
+		if ((stopped ? 1 : 0) != said || ++saidFrame > 5000)	// (said again now and then: Minecraft may have come later)
+		{
+			said = stopped ? 1 : 0;
+			saidFrame = 0;
+			sendCommand(stopped ? "tick freeze" : "tick unfreeze");
+		}
+	}
 
 	double yaw = -vp.Angles.Yaw.Degrees() - 90.0;
 	yaw -= 360.0 * floor((yaw + 180.0) / 360.0);
@@ -1632,13 +1818,54 @@ bool MCBridge_Responder(event_t *ev)
 			send(m);
 			return true;
 		}
-		if (ev->data1 == KEY_ESCAPE || ev->data1 == 0x12)	// Escape or E closes it
+		if (ev->data1 == KEY_ESCAPE)
 		{
 			if (down)
 				sendKey("escape", true);
 			return true;
 		}
-		return ev->data1 == KEY_MWHEELUP || ev->data1 == KEY_MWHEELDOWN || (ev->data1 >= 0x02 && ev->data1 <= 0x0A) || ev->data1 == 0x10;
+		if (ev->data1 == KEY_MWHEELUP || ev->data1 == KEY_MWHEELDOWN)
+		{
+			if (down)
+				send(ev->data1 == KEY_MWHEELUP ? "{\"t\":\"scroll\",\"d\":1}" : "{\"t\":\"scroll\",\"d\":-1}");
+			return true;
+		}
+		// The keyboard is the screen's too, as in Minecraft: E shuts an inventory, the numbers swap with the hotbar,
+		// and a text box (the creative search) is typed into. Minecraft decides which; Doom's player stands still.
+		if (down)
+		{
+			const char *special = nullptr;
+			switch (ev->data1)
+			{
+			case KEY_ENTER: special = "enter"; break;
+			case KEY_BACKSPACE: special = "backspace"; break;
+			case KEY_DEL: special = "delete"; break;
+			case KEY_LEFTARROW: special = "left"; break;
+			case KEY_RIGHTARROW: special = "right"; break;
+			case KEY_UPARROW: special = "up"; break;
+			case KEY_DOWNARROW: special = "down"; break;
+			case KEY_HOME: special = "home"; break;
+			case KEY_END: special = "end"; break;
+			case KEY_TAB: special = "tab"; break;
+			default: break;
+			}
+			FString m;
+			if (special != nullptr)
+			{
+				m.Format("{\"t\":\"keypress\",\"k\":\"%s\"}", special);
+				send(m);
+			}
+			else if (ev->data1 < 0x80)
+			{
+				const int c = McShm_KeyChar(ev->data1);
+				if (c != 0)
+				{
+					m.Format("{\"t\":\"char\",\"c\":%d}", c);
+					send(m);
+				}
+			}
+		}
+		return ev->data1 != KEY_LSHIFT && ev->data1 != KEY_RSHIFT;
 	}
 
 	if (ev->data1 == 0x14)	// T: Minecraft's chat
@@ -1730,6 +1957,63 @@ void MCBridge_FilterTiccmd(ticcmd_t *cmd)
 		cmd->ucmd.buttons &= ~(BT_ATTACK | BT_ALTATTACK);
 }
 
+// Doom's saved games. Minecraft keeps, beside each (by the file's name), what goes with it: what the player
+// carries, what he has built and mined in the map. It is told when a game is saved, loaded and deleted.
+static FString saveId(const char *filename)
+{
+	FString name = filename != nullptr ? filename : "";
+	ptrdiff_t slash = max(name.LastIndexOf("/"), name.LastIndexOf("\\"));
+	if (slash >= 0)
+		name = name.Mid(slash + 1);
+	ptrdiff_t dot = name.LastIndexOf(".");
+	if (dot > 0)
+		name = name.Left(dot);
+	FString id;
+	for (size_t i = 0; i < name.Len(); i++)
+	{
+		const char c = name[i];
+		id += ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') ? c : '_';
+	}
+	return id;
+}
+
+void MCBridge_GameSaved(const char *filename)
+{
+	if (!started || !link.connected())
+		return;
+	// (Doom saves by itself on coming into a map, before this bridge has emptied Minecraft's map of the last one's
+	// things: then only what the player carries goes with the save, not blocks that belong to another map)
+	FLevelLocals *Level = primaryLevel;
+	const bool stale = Level == nullptr || Level != currentLevel || currentMap.Compare(Level->MapName) != 0;
+	FString m;
+	m.Format("{\"t\":\"save\",\"id\":\"%s\",\"carried\":%s}", saveId(filename).GetChars(), stale ? "true" : "false");
+	send(m);
+}
+
+// A new game (from Doom's menu, or the "map" command): Minecraft's side starts afresh too. The map is emptied as
+// for any new map; and the player, who otherwise keeps what he carries from map to map, starts again with what a new
+// player starts with.
+void MCBridge_NewGame()
+{
+	pendingNew = true;
+	pendingLoad = "";
+}
+
+void MCBridge_GameLoaded(const char *filename)
+{
+	// (acted on in the ticker, once the loaded map is the one being played: Minecraft's map is emptied first)
+	pendingLoad = saveId(filename);
+}
+
+void MCBridge_SaveDeleted(const char *filename)
+{
+	if (!started || !link.connected())
+		return;
+	FString m;
+	m.Format("{\"t\":\"savedel\",\"id\":\"%s\"}", saveId(filename).GetChars());
+	send(m);
+}
+
 void MCBridge_FilterMovement(ticcmd_t *cmd)
 {
 	// Minecraft moves the player: Doom's movement controls are passed on to it, and Doom itself gets none of them.
@@ -1741,6 +2025,11 @@ void MCBridge_FilterMovement(ticcmd_t *cmd)
 		cmd->ucmd.forwardmove = cmd->ucmd.sidemove = cmd->ucmd.upmove = 0;
 		cmd->ucmd.buttons &= ~(BT_JUMP | BT_CROUCH);
 	}
+}
+
+bool MCBridge_Active()
+{
+	return started && inGame() && link.connected();
 }
 
 bool MCBridge_HideWeapon()
@@ -1809,6 +2098,9 @@ bool MCBridge_GetLayers(McLayers &layers)
 		for (int j = 0; j < 3; j++)
 			layers.viewToWorld[i][j] = static_cast<float>(mNow[j][i]);
 	}
+	layers.cursorShown = screenOpen && mc_hands && viewWidth > 0 && viewHeight > 0;
+	layers.cursor[0] = viewWidth > 0 ? static_cast<float>(cursorX / viewWidth) : 0.5f;
+	layers.cursor[1] = viewHeight > 0 ? static_cast<float>(1.0 - cursorY / viewHeight) : 0.5f;
 	layers.drawWorld = (mc_layers & 1) != 0;
 	layers.drawOverlay = (mc_layers & 2) != 0;
 	return true;

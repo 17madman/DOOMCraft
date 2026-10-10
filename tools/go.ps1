@@ -35,8 +35,9 @@ New-Item -ItemType Directory -Force (Join-Path $run "shots") | Out-Null
 
 # Minecraft: its window never shown, no sound
 $env:PASSTHROUGH_BACKGROUND = "1"
+if (-not $env:PASSTHROUGH_KIT) { $env:PASSTHROUGH_KIT = "starter" }
 $started = Get-Date
-Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"`"$root\run-minecraft.cmd`" > `"$root\run-minecraft.log`" 2>&1`"" -WindowStyle Hidden
+Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"`"$root\tools\build-mc.cmd`" runClient > `"$root\run\minecraft.log`" 2>&1`"" -WindowStyle Hidden
 $deadline = (Get-Date).AddSeconds(180)
 while ((Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds 300

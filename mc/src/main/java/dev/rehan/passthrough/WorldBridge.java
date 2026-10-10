@@ -524,6 +524,196 @@ public final class WorldBridge {
 		});
 	}
 
+	// ---- saved games of the host
+	//
+	// The host's own saves hold its world; they know nothing of what the player has done in Minecraft's. Beside each
+	// of them (by its name) Minecraft keeps what goes with it: what the player carries, what he has built in the map
+	// he is in (chests with what is in them), and what he has mined out of it. Kept in the game folder, under
+	// passthrough-saves: the world itself is made afresh at every start.
+
+	private static java.nio.file.Path saveFile(final String id) {
+		String name = id.replaceAll("[^A-Za-z0-9_.-]", "_");
+		return net.fabricmc.loader.api.FabricLoader.getInstance().getGameDir().resolve("passthrough-saves").resolve(name + ".nbt");
+	}
+
+	/** {"t":"save","id":name}: the host has saved its game under that name. */
+	public static void saveGame(final String id, final boolean carriedOnly) {
+		MinecraftServer s = server;
+		if (s == null) {
+			return;
+		}
+
+		s.execute(() -> {
+			try {
+				ServerLevel level = s.overworld();
+				net.minecraft.nbt.CompoundTag root = new net.minecraft.nbt.CompoundTag();
+				// ("carried only": the map in Minecraft is still the one the host has just left)
+				root.putLongArray("mined", carriedOnly ? new long[0] : mined.stream().mapToLong(BlockPos::asLong).toArray());
+
+				net.minecraft.nbt.ListTag blocks = new net.minecraft.nbt.ListTag();
+				for (BlockPos pos : carriedOnly ? Set.<BlockPos>of() : built) {
+					BlockState state = level.getBlockState(pos);
+					if (state.isAir()) {
+						continue;
+					}
+
+					net.minecraft.nbt.CompoundTag block = new net.minecraft.nbt.CompoundTag();
+					block.putLong("pos", pos.asLong());
+					block.put("state", net.minecraft.nbt.NbtUtils.writeBlockState(state));
+					net.minecraft.world.level.block.entity.BlockEntity entity = level.getBlockEntity(pos);
+					if (entity != null) {
+						block.put("entity", entity.saveWithFullMetadata(s.registryAccess()));
+					}
+
+					blocks.add(block);
+				}
+
+				root.put("blocks", blocks);
+				if (!s.getPlayerList().getPlayers().isEmpty()) {
+					ServerPlayer player = s.getPlayerList().getPlayers().get(0);
+					var ops = s.registryAccess().createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE);
+					net.minecraft.nbt.ListTag items = new net.minecraft.nbt.ListTag();
+					for (int slot = 0; slot < player.getInventory().getContainerSize(); slot++) {
+						ItemStack stack = player.getInventory().getItem(slot);
+						if (stack.isEmpty()) {
+							continue;
+						}
+
+						final int at = slot;
+						ItemStack.CODEC.encodeStart(ops, stack).result().ifPresent(tag -> {
+							net.minecraft.nbt.CompoundTag item = new net.minecraft.nbt.CompoundTag();
+							item.putInt("slot", at);
+							item.put("item", tag);
+							items.add(item);
+						});
+					}
+
+					root.put("items", items);
+					root.putInt("xpLevel", player.experienceLevel);
+					root.putFloat("xpProgress", player.experienceProgress);
+					root.putInt("xpTotal", player.totalExperience);
+				}
+
+				java.nio.file.Path file = saveFile(id);
+				java.nio.file.Files.createDirectories(file.getParent());
+				net.minecraft.nbt.NbtIo.writeCompressed(root, file);
+				Passthrough.LOG.info("saved with the host's game {}: {} blocks built, {} cells mined", id, blocks.size(), mined.size());
+			} catch (Exception e) {
+				Passthrough.LOG.warn("couldn't save with the host's game {}", id, e);
+			}
+		});
+	}
+
+	/**
+	 * {"t":"load","id":name}: the host has loaded that game (and has said "reset" just before: the map is empty and
+	 * its columns are on their way). What went with it is put back. A game saved without Minecraft has nothing to
+	 * put back: then things stay as they are.
+	 */
+	public static void loadGame(final String id) {
+		MinecraftServer s = server;
+		if (s == null) {
+			return;
+		}
+
+		s.execute(() -> {
+			java.nio.file.Path file = saveFile(id);
+			if (!java.nio.file.Files.exists(file)) {
+				Passthrough.LOG.info("the host's game {} has nothing of Minecraft's saved with it", id);
+				return;
+			}
+
+			try {
+				ServerLevel level = s.overworld();
+				net.minecraft.nbt.CompoundTag root = net.minecraft.nbt.NbtIo.readCompressed(file, net.minecraft.nbt.NbtAccounter.unlimitedHeap());
+				// what was mined: open before the map's columns are laid (they leave mined cells out), and told to the
+				// host, which opens its own world there
+				for (long cell : root.getLongArray("mined").orElse(new long[0])) {
+					BlockPos pos = BlockPos.of(cell);
+					mined.add(pos);
+					minedSeen.add(cell);
+					minedNews.add(pos);
+				}
+
+				// what was built
+				var blockLookup = level.registryAccess().lookupOrThrow(net.minecraft.core.registries.Registries.BLOCK);
+				net.minecraft.nbt.ListTag blocks = root.getListOrEmpty("blocks");
+				for (net.minecraft.nbt.Tag tag : blocks) {
+					if (!(tag instanceof net.minecraft.nbt.CompoundTag block)) {
+						continue;
+					}
+
+					BlockPos pos = BlockPos.of(block.getLongOr("pos", 0L));
+					BlockState state = net.minecraft.nbt.NbtUtils.readBlockState(blockLookup, block.getCompoundOrEmpty("state"));
+					if (state.isAir() || !level.isInWorldBounds(pos)) {
+						continue;
+					}
+
+					level.setBlock(pos, state, Block.UPDATE_ALL);
+					built.add(pos);
+					changes.put(pos, solidForHost(level, pos, state));
+					if (block.contains("entity")) {
+						net.minecraft.world.level.block.entity.BlockEntity entity = net.minecraft.world.level.block.entity.BlockEntity.loadStatic(pos, state,
+							block.getCompoundOrEmpty("entity"), s.registryAccess());
+						if (entity != null) {
+							level.setBlockEntity(entity);
+						}
+					}
+				}
+
+				// what he carried
+				if (root.contains("items") && !s.getPlayerList().getPlayers().isEmpty()) {
+					ServerPlayer player = s.getPlayerList().getPlayers().get(0);
+					var ops = s.registryAccess().createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE);
+					player.getInventory().clearContent();
+					for (net.minecraft.nbt.Tag tag : root.getListOrEmpty("items")) {
+						if (tag instanceof net.minecraft.nbt.CompoundTag item && item.contains("item")) {
+							int slot = item.getIntOr("slot", -1);
+							if (slot >= 0 && slot < player.getInventory().getContainerSize()) {
+								ItemStack.CODEC.parse(ops, item.get("item")).result().ifPresent(stack -> player.getInventory().setItem(slot, stack));
+							}
+						}
+					}
+
+					player.setExperienceLevels(root.getIntOr("xpLevel", 0));
+					player.experienceProgress = root.getFloatOr("xpProgress", 0.0F);
+					player.totalExperience = root.getIntOr("xpTotal", 0);
+					player.inventoryMenu.broadcastChanges();
+				}
+
+				Passthrough.LOG.info("loaded with the host's game {}: {} blocks built, {} cells mined", id, blocks.size(), mined.size());
+			} catch (Exception e) {
+				Passthrough.LOG.warn("couldn't load what goes with the host's game {}", id, e);
+			}
+		});
+	}
+
+	/** {"t":"savedel","id":name}: the host has deleted that game. */
+	public static void deleteGame(final String id) {
+		try {
+			java.nio.file.Files.deleteIfExists(saveFile(id));
+		} catch (Exception e) {
+			Passthrough.LOG.warn("couldn't delete what went with the host's game {}", id, e);
+		}
+	}
+
+	/**
+	 * What the player's swing does with what he holds. Asked of the server's player: the client's copy of this
+	 * attribute is never told about the item in hand (Minecraft does not send it), and says 1, a bare fist, whatever
+	 * he holds. (So every sword did a fist's damage to the host's creatures.)
+	 */
+	public static double attackDamage(final double otherwise) {
+		MinecraftServer s = server;
+		try {
+			if (s != null && !s.getPlayerList().getPlayers().isEmpty()) {
+				return s.getPlayerList().getPlayers().get(0).getAttributeValue(net.minecraft.world.entity.ai.attributes.Attributes.ATTACK_DAMAGE);
+			}
+		} catch (RuntimeException e) {
+			// (read from another thread, between ticks: the client's figure will do for once)
+		}
+
+		return otherwise;
+	}
+
 	/** Remove every barrier we placed (e.g. when the host teleports somewhere else). */
 	public static void clearSolid() {
 		MinecraftServer s = server;

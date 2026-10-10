@@ -54,7 +54,7 @@ public final class RockBlock extends Block {
 	@Override
 	protected float getDestroyProgress(final BlockState state, final net.minecraft.world.entity.player.Player player,
 		final net.minecraft.world.level.BlockGetter level, final net.minecraft.core.BlockPos pos) {
-		return Materials.at(pos).getDestroyProgress(player, level, pos);
+		return Materials.at(pos, player.getMainHandItem()).getDestroyProgress(player, level, pos);
 	}
 
 	/** And it drops what that block drops, to the tool that block needs. */
@@ -63,7 +63,7 @@ public final class RockBlock extends Block {
 		final net.minecraft.core.BlockPos pos, final BlockState state, final net.minecraft.world.level.block.entity.BlockEntity blockEntity,
 		final net.minecraft.world.item.ItemStack tool) {
 		super.playerDestroy(level, player, pos, state, blockEntity, tool);
-		BlockState made = Materials.at(pos);
+		BlockState made = Materials.at(pos, tool);
 		if (!made.requiresCorrectToolForDrops() || tool.isCorrectToolForDrops(made)) {
 			Block.dropResources(made, level, pos, null, player, tool);
 		}

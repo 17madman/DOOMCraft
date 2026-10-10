@@ -109,6 +109,13 @@ public final class Vitals {
 		}
 
 		float now = player.getHealth();
+		// (nothing heals while the host is paused: what Minecraft added meanwhile, a potion still working, is taken
+		// off again below, where his health is set to the host's)
+		boolean paused = s.tickRateManager().isFrozen();
+		if (paused) {
+			lastSet = -1.0F;
+		}
+
 		if (lastSet >= 0.0F && now > lastSet + 0.01F) {
 			// Minecraft healed the player (natural regeneration from food, a potion, a golden apple)
 			float gained = (now - lastSet) * HOST_PER_POINT;

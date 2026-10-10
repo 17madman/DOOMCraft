@@ -100,11 +100,28 @@ public final class Materials {
 		return plain;
 	}
 
-	/** Something made of metal (a base's plating, its doors and machines): iron in every third cell, the rest stone. */
+	/** Something made of metal (a base's plating, its doors and machines): iron in every fifth cell, the rest stone. */
 	private static BlockState metal(final BlockPos pos) {
 		int r = roll(pos);
-		return r < 330 ? Blocks.IRON_ORE.defaultBlockState() : r < 380 ? Blocks.COPPER_ORE.defaultBlockState()
-			: r < 400 ? Blocks.REDSTONE_ORE.defaultBlockState() : Blocks.STONE.defaultBlockState();
+		return r < 200 ? Blocks.IRON_ORE.defaultBlockState() : r < 240 ? Blocks.COPPER_ORE.defaultBlockState()
+			: r < 255 ? Blocks.REDSTONE_ORE.defaultBlockState() : Blocks.STONE.defaultBlockState();
+	}
+
+	/**
+	 * What a cell of the host's map is to someone digging it with this tool. The map's cells cannot be seen before
+	 * they are dug: a cell with ore in it that the tool is too poor for (iron, to a wooden pickaxe) would be a piece
+	 * of wall that for no reason to be seen takes four times as long and then gives nothing. To such a tool the cell
+	 * is plain stone, and gives cobblestone. (The ore that shows in the walls of a hole, once one is dug, is ore, and
+	 * wants the tool ore wants.)
+	 */
+	public static BlockState at(final BlockPos pos, final net.minecraft.world.item.ItemStack tool) {
+		BlockState made = at(pos);
+		if (made.requiresCorrectToolForDrops() && !tool.isCorrectToolForDrops(made)
+			&& net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(made.getBlock()).getPath().endsWith("_ore")) {
+			return Blocks.STONE.defaultBlockState();
+		}
+
+		return made;
 	}
 
 	/** The ordinary block the host's map is at pos. */

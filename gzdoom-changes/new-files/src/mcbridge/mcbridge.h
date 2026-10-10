@@ -39,6 +39,9 @@ struct McLayers
 	int gridSide;
 	float camInGrid[3];			// the camera, in blocks from the grid's corner
 	float viewToWorld[3][3];	// view space -> Minecraft world axes
+	// the pointer over one of Minecraft's screens (its inventory): where the mouse is this frame, 0..1 across and up
+	bool cursorShown;
+	float cursor[2];
 };
 
 // Engine hooks
@@ -55,5 +58,11 @@ void MCBridge_FilterTiccmd(ticcmd_t *cmd);
 // At the very end of building a tic's command (movement and all buttons are in): while Minecraft moves the
 // player, the movement goes to it and Doom gets none.
 void MCBridge_FilterMovement(ticcmd_t *cmd);
+// Doom's saved games: Minecraft keeps what goes with each (what the player carries, built and mined), by the file's name.
+void MCBridge_NewGame();
+void MCBridge_GameSaved(const char *filename);
+void MCBridge_GameLoaded(const char *filename);
+void MCBridge_SaveDeleted(const char *filename);
 bool MCBridge_HideWeapon();
+bool MCBridge_Active();													// Minecraft is being drawn into the view
 bool MCBridge_GetLayers(McLayers &layers);								// false: nothing to composite this frame
