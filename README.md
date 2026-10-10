@@ -10,26 +10,36 @@ as Steve, with Minecraft's hands, hotbar, inventory, blocks, mobs and crafting.
 - **Mobs and monsters fight each other.** Hearts and armour are Doom's health and armour.
 - **Saving Minecraft World State:** When making a save in Doom, the MC world's state is saved. When a Doom save is deleted, the corresponding MC world is removed as well.
 
-Windows only, single-player. **No game files are included:** you bring your own Minecraft: Java Edition and your
-own Doom WAD (or the free [Freedoom](https://freedoom.github.io)).
+Windows only, single-player. **No game files are included.** GZDoom is fetched and built by the steps below,
+Minecraft is downloaded by the launcher on its first run, and the Doom WAD is yours (or the free
+[Freedoom](https://freedoom.github.io)).
 
 ## Install
 
-You need Minecraft: Java Edition 26.3 with [Fabric Loader](https://fabricmc.net/use/installer/) and
-[Fabric API](https://modrinth.com/mod/fabric-api), and a Doom WAD (`DOOM.WAD`, `DOOM2.WAD`, `TNT.WAD`,
-`PLUTONIA.WAD`, the shareware `DOOM1.WAD`, or Freedoom).
+You need:
 
-1. Download the zip from [Releases](../../releases) and unzip it anywhere.
-2. Make a **separate** Fabric installation in the Minecraft launcher and put `minecraft-mod\passthrough-0.1.0.jar`
-   and the Fabric API jar into its `mods` folder. (With the mod in, Minecraft opens its own world, `passthrough`,
-   at start and makes it afresh each time: a world of yours with that name would be deleted.)
+- Windows 10/11 and [Git](https://git-scm.com/download/win)
+- [Visual Studio 2022](https://visualstudio.microsoft.com/vs/community/) with "Desktop development with C++"
+  (to build GZDoom)
+- [JDK 25](https://adoptium.net/temurin/releases/?version=25), installed or unpacked as `tools\jdk-25...`
+- a Doom WAD: `DOOM.WAD`, `DOOM2.WAD`, `TNT.WAD`, `PLUTONIA.WAD`, the shareware `DOOM1.WAD`, or Freedoom
+
+You do **not** need to install Minecraft, Fabric or the mod: the launcher downloads Minecraft 26.3 from Mojang and
+builds the mod into it. (Minecraft is Mojang's game: own a copy of Java Edition.)
+
+1. Clone this repository.
+2. Get GZDoom's source with this project's changes on it (it is cloned into `gzdoom\`):
+   `powershell -ExecutionPolicy Bypass -File tools\gzdoom-changes.ps1 apply`
+3. Unzip the official [GZDoom 4.14.2 Windows release](https://github.com/ZDoom/gzdoom/releases/tag/g4.14.2) into
+   `tools\gzdoom-release\` (its sound libraries are copied from there).
+4. Build GZDoom: `tools\build-gzdoom.cmd` (about 20 minutes; ends with `BUILD OK`).
+5. Double-click `Play.cmd`. The first run downloads Minecraft and builds the mod, a few minutes.
 
 ## Play
 
 Double-click `Play.cmd` and pick your WAD (or drag a WAD onto it). `Play.cmd last` replays the last one.
 
-- Minecraft is started for you if you built from source. With your own installation, start it when `Play.cmd` asks;
-  Doom follows by itself once Minecraft is in its world.
+- Minecraft is started for you, hidden; Doom follows by itself once Minecraft is in its world.
 - Doom starts at its own title screen: New Game, Load and Save are Doom's.
 - Quit Doom and Minecraft closes too.
 - An add-on (PWAD or .pk3) can be picked like any WAD; you are asked once which game it is for.
@@ -46,8 +56,7 @@ Double-click `Play.cmd` and pick your WAD (or drag a WAD onto it). `Play.cmd las
 
 Settings, in Doom's console (`~`): `mc_spawns 0` (no natural mob spawning), `mc_walk 1` (Minecraft's movement
 instead of Doom's), `mc_overscan` (margin for fast turns, 1.6), `mc_cmd <command>` (run a Minecraft command).
-For the full kit instead of the wooden pickaxe: `Play.cmd kit` from source, or the JVM argument
-`-Dpassthrough.kit=full` on your own installation.
+`mc_companion 0` (no companion). For the full kit instead of the wooden pickaxe: `Play.cmd kit`.
 
 ## Known limits
 
@@ -59,20 +68,9 @@ For the full kit instead of the wooden pickaxe: `Play.cmd kit` from source, or t
 - Next to mined cells you can walk through monsters and decorations.
 
 If Doom shows no hotbar, Minecraft isn't in its world: quit and use `Play.cmd` again. Logs: `run\mc-crash.log`
-(Doom), `run\minecraft.log` (Minecraft from source). The two talk over `127.0.0.1:25599`.
+(Doom), `run\minecraft.log` (Minecraft). The two talk over `127.0.0.1:25599`.
 
-## Building from source
-
-Needs Windows 10/11, [Git](https://git-scm.com/download/win),
-[Visual Studio 2022](https://visualstudio.microsoft.com/vs/community/) with "Desktop development with C++", and
-[JDK 25](https://adoptium.net/temurin/releases/?version=25) (installed, or unpacked as `tools\jdk-25...`).
-
-1. `powershell -ExecutionPolicy Bypass -File tools\gzdoom-changes.ps1 apply` clones GZDoom 4.14.2 into `gzdoom\`
-   and puts this project's changes on it.
-2. Unzip the official [GZDoom 4.14.2 Windows release](https://github.com/ZDoom/gzdoom/releases/tag/g4.14.2) into
-   `tools\gzdoom-release\` (for its sound libraries).
-3. `tools\build-gzdoom.cmd` builds it (about 20 minutes; ends with `BUILD OK`).
-4. `Play.cmd`. The first run downloads and builds the Minecraft side, a few minutes.
+## The source
 
 | path | what it is |
 |---|---|
